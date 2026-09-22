@@ -1,12 +1,12 @@
 <div align="center">
 
-# deep-skill-finder : [deepskill.market](https://www.deepskill.market)
+# deep-skill-finder : [deepskill.market](https://www.deepskill.market?ref=github)
 
 **真测, 真评价, 找到真好用的技能**
 
 *面向AIAgent真实场景的Skill Market。通过专业检索+理解，结合真实用户实际运行反馈，从200k+Skill生态中一键抵达「实测验证」过的技能*。
 
-![deep-skill-finder](assets/background.png)
+[![deep-skill-finder](assets/background.png)](https://www.deepskill.market/feedback?ref=github)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Live in 40+ Agents](https://img.shields.io/badge/live%20in-40%2B%20AI%20Agents-8A2BE2.svg)](#生态支持情况)
@@ -77,7 +77,7 @@ Skill 都会介绍自己能做什么，但很少告诉你实际用起来怎么�
 ## 技能点评
 deep-skill-finder 专门引入了**技能点评**这个模块，不是脱离上下文的简单评分，而一次反馈会围绕具体任务. 
 
-![deep-skill-finder](assets/cn/feedback.png)
+[![deep-skill-finder](assets/cn/feedback.png)](https://www.deepskill.market/feedback?ref=github)
 
 > 每一次`用户点评`都会完整记录使用场景、Skill 表现、评价，以及 Agent 类型、发生时间和预估 Token 消耗等上下文。
 > 需要时还可以附加图片或视频：小文件直接内嵌在反馈 JSON 中，大文件通过服务端预签名 URL 上传到对象存储，上传时仅使用文件名、不会暴露本地路径。

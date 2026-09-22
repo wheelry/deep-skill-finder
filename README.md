@@ -1,12 +1,12 @@
 <div align="center">
 
-# deep-skill-finder : [deepskill.market](https://www.deepskill.market)
+# deep-skill-finder : [deepskill.market](https://www.deepskill.market?ref=github)
 
 **Real Tests, Real Reviews find skills that Real Work**
 
 *An Agentic skill discovery engine. Your Claude Code / Codex / OpenClaw / Cursor auto-discovers the right skill from a 200k+ ecosystem — for every task.*
 
-![deep-skill-finder](assets/background.png)
+[![deep-skill-finder](assets/background.png)](https://www.deepskill.market/feedback?ref=github)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Live in 40+ Agents](https://img.shields.io/badge/live%20in-40%2B%20AI%20Agents-8A2BE2.svg)](#ecosystem-status)
@@ -76,7 +76,7 @@ Every Skill describes what it claims to do; few tell you how it actually behaves
 ## Skill Review
 deep-skill-finder introduces a dedicated **real-user review** module — not context-free star ratings; one review centers on a concrete task.
 
-![deep-skill-finder](assets/en/feedback.png)
+[![deep-skill-finder](assets/en/feedback.png)](https://www.deepskill.market/feedback?ref=github)
 
 > A skill review records the usage scenario, Skill performance, and the rating, plus context such as Agent type, occurrence time, and estimated token usage.       
 > Images or videos can be attached when needed: small files go inline in the feedback JSON, while larger files upload to object storage via a server-issued presigned URL — only the file name is submitted, never the local path.
