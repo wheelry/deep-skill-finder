@@ -361,12 +361,6 @@ python3 scripts/deep_skill_install.py --dir ~/.catpaw/skills --list
 
 ---
 
-## Star 历史
-
-[![Star History Chart](https://api.star-history.com/svg?repos=wheelry/deep-skill-finder&type=Date)](https://star-history.com/#wheelry/deep-skill-finder&Date)
-
----
-
 ## 觉得有帮助？
 
 - ⭐ **[给本仓库点个 Star](../../stargazers)** —— 帮助更多 Agent 用户发现 DSF
