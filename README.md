@@ -331,12 +331,6 @@ Issues and pull requests are welcome.
 
 ---
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=wheelry/deep-skill-finder&type=Date)](https://star-history.com/#wheelry/deep-skill-finder&Date)
-
----
-
 ## Found this useful?
 
 - ⭐ **[Star this repo](../../stargazers)** — help other Agent users discover DSF
