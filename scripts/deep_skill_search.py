@@ -8,6 +8,7 @@
 import argparse
 import json
 import os
+import random
 import socket
 import re
 import sys
@@ -239,6 +240,231 @@ def search_deep(content: str, agent_type: str = None) -> tuple:
     return parsed, request_id, None
 
   
+def _format_count(n) -> str:
+    """数字缩写：263875 -> 263.9k，1930 -> 1.9k，未满千原样输出。"""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return str(n or 0)
+    if n >= 10000:
+        return f"{n / 10000:.1f}w"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+# ---------- 案例展示（三级降级：作品 → 评价 → 榜单） ----------
+
+RANK_ENTRY_URL = "https://www.deepskill.market/skill/skill?name={name}&ref=deep-skill-finder"
+WORK_URL = "https://www.deepskill.market/works/{id}"
+FEEDBACK_URL = "https://www.deepskill.market/feedback/detail/{id}"
+
+# 榜单注册表：随机选一个榜，条目渲染各配一段文案（key 与返回 JSON 中 rankKind 对应）
+RANK_REGISTRY = {
+    "github_star": {
+        "title": "GitHub 趋势榜",
+        "lead": "本次推荐之外，开源社区用 Star 投出来的高人气技能还有：",
+        "metric": "star",
+        "url": "/deepskill/skills/github-star-rank?limit=50",
+    },
+    "github_star_delta": {
+        "title": "GitHub 趋势榜",
+        "lead": "本次推荐之外，最近 30 天在 GitHub 上快速走红的技能还有：",
+        "metric": "star",
+        "url": "/deepskill/skills/github-star-delta-rank?limit=50",
+    },
+    "official_authors": {
+        "title": "权威来源榜",
+        "lead": "这些技能作者都经过平台认证，出品稳定可靠，可以去逛逛：",
+        "metric": "skillCount",
+        "url": "/deepskill/official-authors",
+    },
+    # Market 热搜榜上线后加入：
+    # "market_hot": {
+    #     "title": "站内热门榜",
+    #     "lead": "本次推荐之外，站内用户最近搜得最多的技能还有：",
+    #     "metric": "download",
+    #     "url": "/deepskill/skills/stat-rank?tag=searchCount&limit=50",
+    # },
+}
+
+
+def _fetch_json(endpoint: str, timeout: int = 15):
+    """GET 请求，失败返回 None（案例展示是附加信息，失败静默降级）。"""
+    result = api_request(endpoint, timeout=timeout)
+    if isinstance(result, dict) and result.get("code") == 200:
+        return result.get("data")
+    return None
+
+
+_works_cache = None
+
+
+def _load_all_works() -> list:
+    """全量拉取作品（约 200+ 条，两三页），供按 skillId 匹配。带模块级缓存。"""
+    global _works_cache
+    if _works_cache is not None:
+        return _works_cache
+    works = []
+    for page in (1, 2, 3, 4, 5):
+        data = _fetch_json(f"/creations?page={page}&pageSize=100&sort=sortOrder")
+        if not isinstance(data, dict):
+            break
+        lst = data.get("list") or []
+        works.extend(lst)
+        total = data.get("total") or 0
+        if not lst or len(works) >= total:
+            break
+    _works_cache = works
+    return works
+
+
+def _fetch_works_for_skill(skill_name: str) -> list:
+    """按技能名查作品。
+
+    作品列表自带 skillName 字段（有关联的作品 100% 携带），直接全量拉取后本地精确匹配，
+    无额外请求；skillNames（复数）字段恒为空，注意区分。
+    """
+    works = []
+    for it in _load_all_works():
+        if not isinstance(it, dict) or it.get("skillName") != skill_name:
+            continue
+        works.append({
+            "id": it.get("id", ""),
+            "title": it.get("title", ""),
+            "summary": (it.get("description") or "").strip(),
+            "skillName": skill_name,
+            "viewCount": it.get("viewCount", 0),
+            "upvotes": it.get("upvotes", 0),
+            "commentCount": it.get("commentCount", 0),
+            "url": WORK_URL.format(id=it.get("id", "")),
+        })
+    # 按互动量降序（点赞 > 评论 > 浏览）
+    works.sort(key=lambda w: (w["upvotes"], w["commentCount"], w["viewCount"]), reverse=True)
+    return works
+
+
+def _fetch_feedbacks_for_skill(skill_name: str) -> list:
+    """按技能名查评价。keyword 是全文模糊匹配，必须客户端按 skillName 精确过滤。"""
+    data = _fetch_json(f"/skill-feedback?keyword={urllib.parse.quote(skill_name)}&pageSize=100")
+    if not isinstance(data, dict):
+        return []
+    feedbacks = []
+    for it in data.get("list") or []:
+        if isinstance(it, dict) and it.get("skillName") == skill_name:
+            feedbacks.append({
+                "id": it.get("id", ""),
+                "skillName": it.get("skillName", ""),
+                "rating": it.get("rating"),
+                "comment": (it.get("comment") or "").strip(),
+                "createdAt": it.get("createdAt", ""),
+                "url": FEEDBACK_URL.format(id=it.get("id", "")),
+            })
+    # 最新在前
+    feedbacks.sort(key=lambda f: f.get("createdAt", ""), reverse=True)
+    return feedbacks
+
+
+def _pick_rank_entry(skill_names: list) -> dict:
+    """随机选一个榜 + 从中随机抽 3 个（剔除 Top5 已推荐技能），失败返回 None。"""
+    kind = random.choice(list(RANK_REGISTRY.keys()))
+    reg = RANK_REGISTRY[kind]
+    data = _fetch_json(reg["url"])
+    if not isinstance(data, list) or not data:
+        return None
+    entries = []
+    for it in data:
+        if not isinstance(it, dict):
+            continue
+        if it.get("name") in skill_names:
+            continue  # 剔除已推荐
+        if kind == "official_authors":
+            entries.append({
+                "name": it.get("author", ""),
+                "metric": _format_count(it.get("skillCount", 0)) + " 个技能",
+                "note": (it.get("description") or "").strip(),
+                "url": f"https://www.deepskill.market/creator/{it.get('author', '')}",
+            })
+        else:
+            entries.append({
+                "name": it.get("name", ""),
+                "metric": "⭐ " + _format_count(it.get("downloadCount", 0)),
+                "note": (it.get("description") or "").strip(),
+                "url": RANK_ENTRY_URL.format(name=urllib.parse.quote(it.get("name", ""))),
+            })
+    if not entries:
+        return None
+    picked = random.sample(entries, min(3, len(entries)))
+    return {
+        "rankKind": kind,
+        "title": reg["title"],
+        "lead": reg["lead"],
+        "more": "https://www.deepskill.market/rank",
+        "items": picked,
+    }
+
+
+def case_check(skill_names: list) -> dict:
+    """对 Top5 技能做案例展示探测（三级降级，返回结构化 JSON 供 Agent 渲染）。
+
+    逻辑：逐技能先查作品；无作品再查评价；所有技能都无作品时评价可用技能正常出评价区。
+    有一条作品的技能就不用评价（信息更直观）；全部无作品、部分技能有评价时出评价区；
+    全部无作品且无评价时随机榜单兜底。
+    """
+    skills = [n.strip() for n in skill_names if n and n.strip()][:5]
+    works = []          # [{skillName, title, url, ...}]，按技能在 Top5 中的顺序收集
+    feedback_by_skill = {}
+    for name in skills:
+        try:
+            ws = _fetch_works_for_skill(name)
+        except Exception:
+            ws = []
+        if ws:
+            works.extend(ws)
+            continue
+        try:
+            fb = _fetch_feedbacks_for_skill(name)
+        except Exception:
+            fb = []
+        if fb:
+            feedback_by_skill[name] = fb
+
+    output = {"skills": skills, "works": [], "feedbacks": {}, "rank": None}
+
+    if works:
+        # 封顶 3 条，按互动量降序
+        works.sort(key=lambda w: (w["upvotes"], w["commentCount"], w["viewCount"]), reverse=True)
+        output["works"] = works[:3]
+
+    # 有作品的技能本可跳过评价；但若没有任何作品，则展示有评价的技能的评价
+    if not works and feedback_by_skill:
+        # 每个技能取最高、最低各 1 条；并列/仅 1 条时只留 1 条
+        fb_out = {}
+        for name in skills:
+            if name not in feedback_by_skill:
+                continue
+            lst = feedback_by_skill[name]
+            rated = [f for f in lst if isinstance(f.get("rating"), (int, float))]
+            if not rated:
+                continue
+            best = max(rated, key=lambda f: f["rating"])
+            worst = min(rated, key=lambda f: f["rating"])
+            if best["id"] == worst["id"]:
+                fb_out[name] = [best]
+            else:
+                fb_out[name] = [best, worst]
+        output["feedbacks"] = fb_out
+
+    # 兜底：无作品且无可用评价 → 随机榜单
+    if not output["works"] and not output["feedbacks"]:
+        try:
+            output["rank"] = _pick_rank_entry(skills)
+        except Exception:
+            output["rank"] = None
+
+    return output
+
+
 def check_version():
     """输出版本检查结果 JSON：{current_version, latest_version, update_available}"""
     current = get_skill_version()
@@ -276,11 +502,17 @@ def main():
     parser.add_argument("--agent-type", default=None, help="当前 Agent 类型（如 openclaw/hermes/qclaw/catdesk 等，可选）")
     parser.add_argument("--output", help="输出 JSON 到文件（默认 stdout）")
     parser.add_argument("--check-version", action="store_true", help="检查是否有新版本")
+    parser.add_argument("--case-check", metavar="SKILLS", help="对逗号分隔的技能名列表做案例展示探测（作品/评价/榜单三级降级，返回 JSON）")
     args = parser.parse_args()
 
     if args.check_version:
         check_version()
         return
+
+    if args.case_check:
+        result = case_check([n for n in args.case_check.split(",")])
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
 
     if not args.query:
         parser.error("请提供搜索关键词")
