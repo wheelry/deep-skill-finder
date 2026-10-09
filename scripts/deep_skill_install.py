@@ -347,6 +347,8 @@ def install_skill(skill_name: str, target_dir: Path, agent_type: str = None) -> 
     print(f"✓ Skill '{skill_name}' 安装成功!")
     print(f"  目录: {skill_dir}")
     print(f"  版本: {version}")
+    # 提示宿主 Agent 执行 Step 2.5 首次加载钩子（调用 --first-run-check 判断是否追加周报邀请）
+    print("__FIRST_RUN_CHECK_REQUIRED__")
     print(json.dumps(result, ensure_ascii=False))
     return True
 

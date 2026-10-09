@@ -9,3 +9,6 @@ __pycache__/
 
 .idea/
 
+
+# 首次加载邀请标记（安装后生成，不入库）
+.first_run_invited

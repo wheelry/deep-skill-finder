@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 # Windows 控制台默认 cp936，中文/emoji 会 UnicodeEncodeError，统一切到 UTF-8
@@ -465,6 +466,179 @@ def case_check(skill_names: list) -> dict:
     return output
 
 
+# ---- 每周技能推荐（cron digest，规则 8）----
+
+DIGEST_DIR = Path.home() / ".deep_skill_finder"
+DIGEST_HISTORY_FILE = DIGEST_DIR / "digest_history.json"
+# 一次性邀请标记：放在 skill 目录内（重装/重新解压会清掉 → 重新邀请；
+# git pull 升级不会清 → 不重复邀请）；skill 目录不可写时退回家目录
+FIRST_RUN_FILE = Path(__file__).resolve().parent.parent / ".first_run_invited"
+LEGACY_FIRST_RUN_FILE = DIGEST_DIR / "first_install_invited"
+DIGEST_COOLDOWN_DAYS = 56
+# 周报热门补充只用近期飙升榜：累计高星榜结果固定容易重复推同一批，不采用
+DIGEST_BOARDS = ("github_star_delta",)
+DIGEST_HOT_COUNT = 2  # 飙升榜每次随机取的条目数
+
+
+def _load_digest_history() -> dict:
+    """读取推送历史 {skills: {name: date}, works: {id: date}}，剔除超出冷却期的旧记录。"""
+    data = _read_json(DIGEST_HISTORY_FILE)
+    cutoff = (date.today() - timedelta(days=DIGEST_COOLDOWN_DAYS)).isoformat()
+    out = {"skills": {}, "works": {}}
+    for key in ("skills", "works"):
+        for name, d in (data.get(key) or {}).items():
+            if isinstance(d, str) and d >= cutoff:
+                out[key][name] = d
+    return out
+
+
+def _record_digest_history(skill_names: list, work_ids: list):
+    """把本次推送的技能/作品写入历史（保留文件里已有记录），失败静默。"""
+    hist = _load_digest_history()
+    today = date.today().isoformat()
+    for name in skill_names:
+        hist["skills"][name] = today
+    for wid in work_ids:
+        hist["works"][wid] = today
+    try:
+        DIGEST_DIR.mkdir(parents=True, exist_ok=True)
+        # 每类最多保留最近 200 条，防止长期使用无限膨胀
+        for key in ("skills", "works"):
+            if len(hist[key]) > 200:
+                keep = sorted(hist[key].items(), key=lambda kv: kv[1], reverse=True)[:200]
+                hist[key] = dict(keep)
+        DIGEST_HISTORY_FILE.write_text(
+            json.dumps(hist, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _compress_note(text: str, limit: int = 60) -> str:
+    """取描述首行并截断，用作一句话介绍。"""
+    return ((text or "").strip().splitlines() or [""])[0].strip()[:limit]
+
+
+def first_run_check() -> dict:
+    """首次加载自检：未发过周报邀请则返回 should_invite=True 并落标记文件（一次性）。
+
+    标记存于 skill 目录内 .first_run_invited：重新安装/解压会重新触发邀请，
+    git pull 升级不会；skill 目录不可写时退回家目录。旧版全局标记会被清理。
+    除独立调用（Step 0.5/2.5）外，搜索主路径也复用本函数：首次搜索时随
+    输出携带 first_run_invite 邀请信号并落标记（对不执行任何钩子的宿主是
+    唯一可靠触发链，Agent 必然处理搜索输出）。
+    """
+    # 清理旧版整机全局标记（自测残留会挡住重装邀请）
+    try:
+        LEGACY_FIRST_RUN_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+    try:
+        if FIRST_RUN_FILE.exists():
+            return {"should_invite": False}
+        if (DIGEST_DIR / "first_run_fallback_invited").exists():
+            return {"should_invite": False}
+    except OSError:
+        return {"should_invite": False}
+    written = False
+    try:
+        FIRST_RUN_FILE.write_text(date.today().isoformat() + "\n", encoding="utf-8")
+        written = True
+    except OSError:
+        pass
+    if not written:
+        try:
+            DIGEST_DIR.mkdir(parents=True, exist_ok=True)
+            (DIGEST_DIR / "first_run_fallback_invited").write_text(
+                date.today().isoformat() + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    return {"should_invite": True}
+
+
+def digest(keywords: list, record: bool = True) -> dict:
+    """周报推荐数据：技能/作品分路逐关键词取 Top1 + GitHub 榜各随机 1 条，冷却去重。
+
+    - 技能路：每个关键词跑一次语义搜索，仅取第 1 名（跳过冷却期内已推过的）
+    - 作品路：每个关键词跑一次作品关键词搜索，仅取第 1 条已发布作品
+      （未关联 skill 的独立作品同样能命中）
+    - 热门补充：仅 GitHub 近期飙升榜，随机取 2 条（累计高星榜不采用，避免重复推同一批）
+    """
+    keywords = [k.strip() for k in keywords if k and k.strip()][:3]
+    hist = _load_digest_history()
+    output = {"keywords": keywords, "skills": [], "works": [], "hot": []}
+    used_skills = set(hist["skills"])
+
+    for kw in keywords:
+        # 技能路：语义搜索 Top1
+        try:
+            skills, _, err = search_deep(kw)
+        except Exception:
+            skills, err = [], True
+        if not err:
+            for s in skills:
+                name = s.get("name", "")
+                if name and name not in used_skills:
+                    used_skills.add(name)
+                    output["skills"].append({
+                        "keyword": kw,
+                        "name": name,
+                        "reason": _compress_note(s.get("description")) or "相关技能推荐",
+                        "downloadCount": s.get("downloadCount", 0),
+                        "url": RANK_ENTRY_URL.format(name=urllib.parse.quote(name)),
+                    })
+                    break
+        # 作品路：keyword 搜索 Top1（未关联 skill 的独立作品也能命中）
+        try:
+            data = _fetch_json(f"/creations?keyword={urllib.parse.quote(kw)}&pageSize=20&page=1")
+        except Exception:
+            data = None
+        lst = (data or {}).get("list") or [] if isinstance(data, dict) else []
+        for it in lst:
+            if not isinstance(it, dict) or it.get("status", "published") != "published":
+                continue
+            wid = it.get("id", "")
+            if not wid or wid in hist["works"]:
+                continue
+            output["works"].append({
+                "keyword": kw,
+                "id": wid,
+                "title": (it.get("title") or "").strip(),
+                "summary": _compress_note(it.get("description")),
+                "platform": it.get("externalPlatform") or "",
+                "skillName": it.get("skillName") or "",
+                "url": WORK_URL.format(id=wid),
+            })
+            break
+
+    # 热门补充：仅 GitHub 近期飙升榜，随机取 2 条，带一句话介绍
+    for kind in DIGEST_BOARDS:
+        reg = RANK_REGISTRY[kind]
+        try:
+            data = _fetch_json(reg["url"])
+        except Exception:
+            continue
+        if not isinstance(data, list):
+            continue
+        entries = [it for it in data
+                   if isinstance(it, dict) and it.get("name") and it.get("name") not in used_skills]
+        if not entries:
+            continue
+        for it in random.sample(entries, min(DIGEST_HOT_COUNT, len(entries))):
+            used_skills.add(it["name"])
+            output["hot"].append({
+                "board": "GitHub 趋势榜·近期飙升" if kind == "github_star_delta" else reg["title"],
+                "name": it["name"],
+                "metric": "⭐ " + _format_count(it.get("downloadCount", 0)),
+                "note": _compress_note(it.get("description")),
+                "url": RANK_ENTRY_URL.format(name=urllib.parse.quote(it["name"])),
+            })
+
+    if record:
+        _record_digest_history([s["name"] for s in output["skills"]],
+                               [w["id"] for w in output["works"]])
+    return output
+
+
 def check_version():
     """输出版本检查结果 JSON：{current_version, latest_version, update_available}"""
     current = get_skill_version()
@@ -503,6 +677,9 @@ def main():
     parser.add_argument("--output", help="输出 JSON 到文件（默认 stdout）")
     parser.add_argument("--check-version", action="store_true", help="检查是否有新版本")
     parser.add_argument("--case-check", metavar="SKILLS", help="对逗号分隔的技能名列表做案例展示探测（作品/评价/榜单三级降级，返回 JSON）")
+    parser.add_argument("--digest", metavar="KEYWORDS", help="按逗号分隔的工作关键词生成周报推荐数据（技能/作品分路 Top1 + 飙升榜随机 2 条，去重后返回 JSON）")
+    parser.add_argument("--no-record", action="store_true", help="--digest 只生成不记录历史（测试用）")
+    parser.add_argument("--first-run-check", action="store_true", help="首次加载自检：返回是否应发出每周技能推荐邀请（自动落一次性标记）")
     args = parser.parse_args()
 
     if args.check_version:
@@ -511,6 +688,15 @@ def main():
 
     if args.case_check:
         result = case_check([n for n in args.case_check.split(",")])
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.first_run_check:
+        print(json.dumps(first_run_check(), ensure_ascii=False))
+        return 0
+
+    if args.digest:
+        result = digest([k for k in args.digest.split(",")], record=not args.no_record)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
 
@@ -528,6 +714,17 @@ def main():
     }
     if search_error:
         output["error"] = search_error
+
+    # 首次使用携带周报邀请信号（对安装期钩子全部失效的宿主是唯一可靠触发链）：
+    # 随搜索输出附带 first_run_invite，宿主 Agent 读到即按规则 8 展示配置卡。
+    # 搜索输出必然被 Agent 处理，此处同时落一次性标记（与"仅此一次"原则一致）。
+    try:
+        if search_error is None:
+            invite = first_run_check()
+            if invite.get("should_invite"):
+                output["first_run_invite"] = True
+    except Exception:
+        pass
 
     # 保存结果（供 install 脚本读取 requestId 串联下载链路）
     output_path = args.output or str(Path(tempfile.gettempdir()) / "deep_search_results.json")
